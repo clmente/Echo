@@ -365,31 +365,32 @@ opcode PhraseEcho, a, aki
   kSpk = (kEnv > kThresh ? 1 : 0)
 
   if kPlay == 0 then
-    if kSpk == 1 then
-      if kRec == 0 then               ; speech started -> begin a fresh take
+    if kRec == 0 then
+      ; idle: a take begins as soon as you cross the threshold
+      if kSpk == 1 then
         kRec  = 1
         kWNdx = 0
+        kSil  = 0
       endif
-      kSil = 0
-      tablew ain, a(kWNdx), giBuf      ; record one sample
+    endif
+    if kRec == 1 then
+      ; recording: write EVERY sample continuously. Level only decides when the
+      ; take ends — NOT which samples are kept (gating per-sample was the bug).
+      tablew ain, a(kWNdx), giBuf
       kWNdx = kWNdx + 1
-      if kWNdx >= ftlen(giBuf) then     ; buffer full -> play what we have
+      kSil = (kSpk == 1 ? 0 : kSil + 1)
+      if kSil >= iHold then
+        ; finished: drop the trailing silence we just recorded, then play
+        kRec  = 0
+        kLen  = kWNdx - kSil
+        kLen  = (kLen < 0 ? 0 : kLen)
+        kRNdx = 0
+        kPlay = (kLen > iMinLen ? 1 : 0)
+      elseif kWNdx >= ftlen(giBuf) then
         kRec  = 0
         kLen  = kWNdx
         kRNdx = 0
         kPlay = 1
-      endif
-    else
-      if kRec == 1 then
-        kSil = kSil + 1
-        if kSil >= iHold then           ; quiet long enough -> phrase finished
-          kRec  = 0
-          kLen  = kWNdx
-          kRNdx = 0
-          if kLen > iMinLen then
-            kPlay = 1
-          endif
-        endif
       endif
     endif
   endif
