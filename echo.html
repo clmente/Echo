@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>écho — live mic delay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ground:#14171c;
+    --raised:#1b1f26;
+    --line:#262c35;
+    --ink:#e8e4dc;
+    --dim:#868d98;
+    --signal:#e8a04a;   /* live input — warm */
+    --echo:#6bb3b0;     /* delayed return — cool, "from the past" */
+    --bad:#d97b6c;
+    --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --display:"Space Grotesk", var(--mono);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    background:
+      radial-gradient(120% 90% at 50% -10%, #1a1e25 0%, var(--ground) 55%) fixed;
+    color:var(--ink);
+    font-family:var(--mono);
+    -webkit-font-smoothing:antialiased;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:28px;
+  }
+  .card{
+    width:100%;
+    max-width:420px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:30px;
+  }
+
+  /* header */
+  .eyebrow{
+    font-size:11px;
+    letter-spacing:.34em;
+    text-transform:uppercase;
+    color:var(--dim);
+    margin:0;
+  }
+  h1{
+    font-family:var(--display);
+    font-weight:700;
+    font-size:clamp(52px,16vw,76px);
+    line-height:.9;
+    margin:.18em 0 0;
+    letter-spacing:-.01em;
+  }
+  .sub{
+    margin:.7em 0 0;
+    font-size:13px;
+    color:var(--dim);
+    letter-spacing:.01em;
+  }
+  .head{text-align:center}
+
+  /* transport + echo signature */
+  .stage{
+    position:relative;
+    width:230px;
+    height:230px;
+    display:grid;
+    place-items:center;
+  }
+  .rings-static,.rings-live{
+    position:absolute;
+    inset:0;
+    display:grid;
+    place-items:center;
+    pointer-events:none;
+  }
+  .rings-static span{
+    position:absolute;
+    border:1px solid var(--line);
+    border-radius:50%;
+  }
+  .rings-static span:nth-child(1){width:150px;height:150px}
+  .rings-static span:nth-child(2){width:196px;height:196px;opacity:.6}
+  .rings-static span:nth-child(3){width:230px;height:230px;opacity:.32}
+
+  .echo-ring{
+    position:absolute;
+    width:140px;height:140px;
+    border:1.5px solid var(--echo);
+    border-radius:50%;
+    animation:pulse 2s ease-out forwards;
+  }
+  @keyframes pulse{
+    from{transform:scale(1);opacity:.5}
+    to{transform:scale(2.9);opacity:0}
+  }
+
+  .transport{
+    position:relative;
+    width:140px;height:140px;
+    border-radius:50%;
+    border:1px solid var(--line);
+    background:linear-gradient(180deg,#222730,#191d24);
+    color:var(--ink);
+    font-family:var(--mono);
+    font-size:13px;
+    font-weight:600;
+    letter-spacing:.16em;
+    text-transform:uppercase;
+    cursor:pointer;
+    transition:border-color .25s, box-shadow .35s, transform .12s, color .25s;
+  }
+  .transport:hover{border-color:#3a424e}
+  .transport:active{transform:scale(.98)}
+  .transport:focus-visible{outline:2px solid var(--signal);outline-offset:4px}
+  .transport[disabled]{cursor:wait;color:var(--dim)}
+
+  body[data-state="live"] .transport{
+    border-color:var(--signal);
+    color:var(--signal);
+    box-shadow:0 0 0 1px var(--signal), 0 0 34px -6px var(--signal);
+    animation:breathe 2.4s ease-in-out infinite;
+  }
+  @keyframes breathe{
+    0%,100%{box-shadow:0 0 0 1px var(--signal),0 0 26px -8px var(--signal)}
+    50%{box-shadow:0 0 0 1px var(--signal),0 0 40px -4px var(--signal)}
+  }
+
+  /* readouts */
+  .readout{text-align:center;min-height:42px}
+  .status{
+    font-size:13px;
+    color:var(--ink);
+    margin:0;
+    transition:color .2s;
+  }
+  body[data-state="idle"] .status{color:var(--dim)}
+  body[data-state="blocked"] .status,
+  body[data-state="error"] .status{color:var(--bad)}
+
+  .delay{
+    margin:.5em 0 0;
+    font-size:11px;
+    letter-spacing:.22em;
+    text-transform:uppercase;
+    color:var(--dim);
+  }
+  .delay b{color:var(--echo);font-weight:600}
+
+  .note{
+    display:flex;
+    gap:9px;
+    align-items:flex-start;
+    max-width:330px;
+    font-size:12px;
+    line-height:1.5;
+    color:var(--dim);
+    border-top:1px solid var(--line);
+    padding-top:18px;
+  }
+  .note .mark{color:var(--signal);flex:none}
+
+  .ghost{
+    background:none;
+    border:none;
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:.1em;
+    color:var(--dim);
+    cursor:pointer;
+    text-decoration:underline;
+    text-underline-offset:3px;
+    padding:4px 0;
+  }
+  .ghost:hover{color:var(--ink)}
+  .ghost:focus-visible{outline:2px solid var(--signal);outline-offset:3px}
+  .ghost[disabled]{cursor:wait;text-decoration:none;color:var(--echo)}
+
+  /* console */
+  details{width:100%;max-width:330px}
+  summary{
+    list-style:none;
+    cursor:pointer;
+    font-size:10px;
+    letter-spacing:.26em;
+    text-transform:uppercase;
+    color:var(--dim);
+  }
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:"› ";color:var(--line)}
+  details[open] summary::before{content:"⌄ "}
+  .log{
+    margin-top:10px;
+    background:#10131880;
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:10px 12px;
+    font-size:11px;
+    line-height:1.55;
+    color:var(--dim);
+    max-height:150px;
+    overflow:auto;
+    white-space:pre-wrap;
+    word-break:break-word;
+  }
+  .log .t{color:#4f5763}
+
+  footer{
+    font-size:10px;
+    letter-spacing:.2em;
+    text-transform:uppercase;
+    color:#4a515c;
+  }
+
+  @media (max-width:380px){
+    .stage{width:200px;height:200px}
+    .rings-static span:nth-child(3){width:200px;height:200px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .echo-ring{display:none}
+    body[data-state="live"] .transport{animation:none}
+  }
+</style>
+</head>
+<body data-state="idle">
+  <main class="card">
+    <header class="head">
+      <p class="eyebrow">live microphone delay</p>
+      <h1>écho</h1>
+      <p class="sub">your voice, one second later</p>
+    </header>
+
+    <div class="stage">
+      <div class="rings-static" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="rings-live" id="ringHost" aria-hidden="true"></div>
+      <button class="transport" id="transport" aria-live="polite">Start</button>
+    </div>
+
+    <div class="readout">
+      <p class="status" id="status">Ready — put on headphones, then start.</p>
+      <p class="delay">delay <b>1.0 s</b></p>
+    </div>
+
+    <p class="note">
+      <span class="mark">↳</span>
+      <span>Use headphones. On speakers the delayed sound leaks back into the mic and builds into a feedback loop.</span>
+    </p>
+
+    <button class="ghost" id="toneBtn">play a test tone — no mic</button>
+
+    <details>
+      <summary>console</summary>
+      <div class="log" id="log"><span class="t">idle — engine not loaded yet.</span></div>
+    </details>
+
+    <footer>csound · webassembly · no install</footer>
+  </main>
+
+<script type="module">
+  // ── Your patch, verbatim. The -iadc flag is what makes Csound request the mic. ──
+  const CSD = `
+<CsoundSynthesizer>
+        <CsOptions>
+        -odac -iadc --daemon
+        </CsOptions>
+        <CsInstruments>
+          0dbfs=1
+          nchnls_i=1
+          nchnls=2
+
+          instr 1
+            ain = inch(1)
+            ;al, ar  reverbsc ain, ain, 0.85, 10000
+            al delay ain, 1
+            ;ar delay ain, 1
+            ;out(al, ar)
+            out(al, al)
+          endin
+
+          schedule(1, 0, -1)
+
+        </CsInstruments>
+        <CsScore>
+        </CsScore>
+      </CsoundSynthesizer>
+`;
+
+  // A mic-free test tone, to confirm sound actually comes OUT of the engine.
+  const TONE = `
+<CsoundSynthesizer>
+<CsOptions>
+-odac
+</CsOptions>
+<CsInstruments>
+0dbfs=1
+nchnls=2
+instr 1
+  a1 oscils 0.2, 440, 0
+  out a1, a1
+endin
+schedule(1, 0, -1)
+</CsInstruments>
+<CsScore>
+</CsScore>
+</CsoundSynthesizer>
+`;
+
+  const els = {
+    body: document.body,
+    btn: document.getElementById('transport'),
+    status: document.getElementById('status'),
+    log: document.getElementById('log'),
+    rings: document.getElementById('ringHost'),
+  };
+
+  const MESSAGES = {
+    idle:     'Ready — put on headphones, then start.',
+    starting: 'Starting — allow the microphone when asked…',
+    live:     'Listening. Make a sound — you hear it back a second later.',
+    blocked:  'Microphone blocked. Allow it in your browser’s site settings, then start again.',
+    error:    'Couldn’t start the audio engine. See the console below.',
+  };
+  const LABEL = { idle:'Start', starting:'Starting…', live:'Stop', blocked:'Start', error:'Start' };
+
+  function setState(s){
+    els.body.dataset.state = s;
+    els.status.textContent = MESSAGES[s];
+    els.btn.textContent = LABEL[s];
+    els.btn.disabled = (s === 'starting');
+  }
+  function log(tag, msg){
+    const time = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="t">${time}</span>  `;
+    line.appendChild(document.createTextNode(`${tag ? tag + ': ' : ''}${msg}`));
+    els.log.appendChild(line);
+    els.log.scrollTop = els.log.scrollHeight;
+  }
+
+  // ── echo rings, spawned at the delay interval while live ──
+  const reduced = matchMedia('(prefers-reduced-motion:reduce)').matches;
+  let ringTimer = null;
+  function spawnRing(){
+    const r = document.createElement('span');
+    r.className = 'echo-ring';
+    r.addEventListener('animationend', () => r.remove());
+    els.rings.appendChild(r);
+  }
+  function startRings(){ if (reduced) return; spawnRing(); ringTimer = setInterval(spawnRing, 1000); }
+  function stopRings(){ clearInterval(ringTimer); ringTimer = null; els.rings.innerHTML = ''; }
+
+  // ── load @csound/browser from a CDN (try a few, report clearly) ──
+  let CsoundFactory = null;
+  // Load the package's OWN prebuilt bundle (self-contained, resolves its wasm +
+  // worklet from the same path). NOT jsDelivr's /+esm or esm.sh — those rewrite
+  // multi-entry/wasm packages into something that breaks the AudioWorklet.
+  const CDNS = [
+    'https://cdn.jsdelivr.net/npm/@csound/browser@6.18.7/dist/csound.js',      // proven realtime mic input
+    'https://cdn.jsdelivr.net/npm/@csound/browser@7.0.0-beta31/dist/csound.js', // fallback
+  ];
+  async function loadFactory(){
+    if (CsoundFactory) return CsoundFactory;
+    let lastErr;
+    for (const url of CDNS){
+      try {
+        log('loader', `fetching engine…`);
+        const mod = await import(url);
+        const f = mod.Csound || (mod.default && mod.default.Csound) || mod.default;
+        if (typeof f === 'function'){ CsoundFactory = f; log('loader', 'engine ready.'); return f; }
+        lastErr = new Error('module loaded but Csound export not found');
+      } catch (e){ lastErr = e; log('loader', `failed (${e.message}) — trying next…`); }
+    }
+    throw lastErr || new Error('no CDN reachable');
+  }
+
+  // compile method name differs slightly across versions — handle both
+  async function compileCsd(cs, csd){
+    if (typeof cs.compileCsdText === 'function') return cs.compileCsdText(csd);
+    if (typeof cs.compileCSD === 'function') return cs.compileCSD(csd, 1);
+    throw new Error('no CSD compile method on Csound object');
+  }
+
+  let csound = null;
+
+  async function start(){
+    setState('starting');
+
+    // permission first, with a clean denial path
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());   // Csound's own input re-acquires it (permission stays granted)
+      log('mic', 'permission granted.');
+    } catch (e){
+      log('mic', `denied or unavailable (${e.name}).`);
+      setState('blocked');
+      return;
+    }
+
+    try {
+      const Csound = await loadFactory();
+      csound = await Csound();
+      if (typeof csound.on === 'function') csound.on('message', m => log('', String(m).trimEnd()));
+      else if (typeof csound.setMessageCallback === 'function') csound.setMessageCallback(m => log('', String(m).trimEnd()));
+
+      // Connect the mic to the engine (the CSD's -iadc also requests it).
+      if (typeof csound.enableAudioInput === 'function') {
+        try {
+          const r = csound.enableAudioInput((ok) => log('mic', 'audio input ' + (ok ? 'connected' : 'unavailable')));
+          if (r && typeof r.then === 'function') await r;
+          log('mic', 'enableAudioInput() done.');
+        } catch (e){ log('mic', 'enableAudioInput failed: ' + e.message); }
+      } else {
+        log('mic', 'enableAudioInput() not present on this build.');
+      }
+
+      await compileCsd(csound, CSD);
+      await csound.start();
+      setState('live');
+      startRings();
+      log('csound', 'performing.');
+    } catch (e){
+      log('error', e.message || String(e));
+      setState('error');
+      try { await csound?.stop(); } catch {}
+      csound = null;
+    }
+  }
+
+  async function stop(){
+    stopRings();
+    try { await csound?.stop(); } catch {}
+    csound = null;
+    setState('idle');
+    log('csound', 'stopped.');
+  }
+
+  els.btn.addEventListener('click', () => {
+    const s = els.body.dataset.state;
+    if (s === 'live') stop();
+    else if (s !== 'starting') start();
+  });
+
+  // ── mic-free output test: plays a 440 Hz tone for ~3 s ──
+  let toneCs = null;
+  async function testTone(btn){
+    if (toneCs) return;
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = 'playing 440 Hz…';
+    log('tone', 'starting test tone (no mic)…');
+    try {
+      const Csound = await loadFactory();
+      toneCs = await Csound();
+      if (typeof toneCs.on === 'function') toneCs.on('message', m => log('tone', String(m).trimEnd()));
+      await compileCsd(toneCs, TONE);
+      await toneCs.start();
+      log('tone', 'tone should be audible now (3 s).');
+      await new Promise(r => setTimeout(r, 3000));
+    } catch (e){ log('tone', 'error: ' + (e.message || e)); }
+    try { await toneCs?.stop(); } catch {}
+    toneCs = null;
+    btn.disabled = false;
+    btn.textContent = label;
+    log('tone', 'test tone stopped.');
+  }
+  document.getElementById('toneBtn').addEventListener('click', (e) => testTone(e.currentTarget));
+</script>
+</body>
+</html>
