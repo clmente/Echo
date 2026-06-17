@@ -184,6 +184,57 @@
   .ghost:focus-visible{outline:2px solid var(--signal);outline-offset:3px}
   .ghost[disabled]{cursor:wait;text-decoration:none;color:var(--echo)}
 
+  /* mode switch + controls */
+  .modeswitch{
+    display:flex;
+    gap:4px;
+    padding:4px;
+    border:1px solid var(--line);
+    border-radius:999px;
+  }
+  .seg{
+    background:none;
+    border:none;
+    border-radius:999px;
+    padding:7px 16px;
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--dim);
+    cursor:pointer;
+    transition:color .2s, background .2s;
+  }
+  .seg:hover{color:var(--ink)}
+  .seg.active{background:var(--raised);color:var(--signal)}
+  .seg:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+  .controls{width:100%;max-width:330px}
+  .ctl{display:flex;flex-direction:column;gap:11px}
+  .ctl.hidden{display:none}
+  .ctl-row{display:flex;justify-content:space-between;align-items:baseline}
+  .ctl label{
+    font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);
+  }
+  .ctl output{font-family:var(--mono);font-size:13px;color:var(--echo)}
+  .hint{margin:2px 0 0;font-size:11px;line-height:1.5;color:var(--dim)}
+  input[type="range"]{
+    -webkit-appearance:none;appearance:none;
+    width:100%;height:2px;border-radius:2px;
+    background:var(--line);outline:none;cursor:pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;
+    width:16px;height:16px;border-radius:50%;
+    background:var(--signal);border:none;cursor:pointer;
+    box-shadow:0 0 10px -2px var(--signal);
+  }
+  input[type="range"]::-moz-range-thumb{
+    width:16px;height:16px;border-radius:50%;
+    background:var(--signal);border:none;cursor:pointer;
+  }
+  input[type="range"]:focus-visible::-webkit-slider-thumb{outline:2px solid var(--ink);outline-offset:2px}
+
   /* console */
   details{width:100%;max-width:330px}
   summary{
@@ -246,7 +297,23 @@
 
     <div class="readout">
       <p class="status" id="status">Ready — put on headphones, then start.</p>
-      <p class="delay">delay <b>1.0 s</b></p>
+    </div>
+
+    <div class="modeswitch" role="group" aria-label="mode">
+      <button class="seg active" id="modeCont" aria-pressed="true">continuous</button>
+      <button class="seg" id="modePhrase" aria-pressed="false">phrase</button>
+    </div>
+
+    <div class="controls">
+      <div class="ctl" id="ctlDelay">
+        <div class="ctl-row"><label for="delay">delay</label><output id="delayVal">1.00 s</output></div>
+        <input type="range" id="delay" min="0.05" max="3" step="0.01" value="1">
+      </div>
+      <div class="ctl hidden" id="ctlSens">
+        <div class="ctl-row"><label for="sens">voice sensitivity</label></div>
+        <input type="range" id="sens" min="0" max="100" step="1" value="50">
+        <p class="hint">Speak, then pause — it plays your phrase back. Nudge this if it triggers too early or never fires.</p>
+      </div>
     </div>
 
     <p class="note">
@@ -265,32 +332,114 @@
   </main>
 
 <script type="module">
-  // ── Your patch, verbatim. The -iadc flag is what makes Csound request the mic. ──
+  // ── Two modes. Continuous = a variable-time delay. Phrase = record while you
+  //    speak, play back when you go quiet. -iadc makes Csound request the mic. ──
   const CSD = `
 <CsoundSynthesizer>
-        <CsOptions>
-        -odac -iadc --daemon
-        </CsOptions>
-        <CsInstruments>
-          0dbfs=1
-          nchnls_i=1
-          nchnls=2
+<CsOptions>
+-odac -iadc --daemon
+</CsOptions>
+<CsInstruments>
+0dbfs=1
+ksmps=32
+nchnls_i=1
+nchnls=2
 
-          instr 1
-            ain = inch(1)
-            ;al, ar  reverbsc ain, ain, 0.85, 10000
-            al delay ain, 1
-            ;ar delay ain, 1
-            ;out(al, ar)
-            out(al, al)
-          endin
+giBuf ftgen 0, 0, 1048576, 2, 0      ; ~21 s mono record buffer for phrase mode
 
-          schedule(1, 0, -1)
+; Phrase recorder/player. setksmps 1 lives ONLY here, so the per-sample work is
+; confined to phrase mode — the delay below keeps running at the normal block
+; size and stays clean, exactly like the original.
+opcode PhraseEcho, a, aki
+  ain, kThresh, iHold xin
+  setksmps 1
+  kRec  init 0
+  kPlay init 0
+  kWNdx init 0
+  kRNdx init 0
+  kLen  init 0
+  kSil  init 0
+  iMinLen = 0.12 * sr                 ; ignore blips shorter than this
 
-        </CsInstruments>
-        <CsScore>
-        </CsScore>
-      </CsoundSynthesizer>
+  kEnv rms ain, 20
+  kSpk = (kEnv > kThresh ? 1 : 0)
+
+  if kPlay == 0 then
+    if kSpk == 1 then
+      if kRec == 0 then               ; speech started -> begin a fresh take
+        kRec  = 1
+        kWNdx = 0
+      endif
+      kSil = 0
+      tablew ain, a(kWNdx), giBuf      ; record one sample
+      kWNdx = kWNdx + 1
+      if kWNdx >= ftlen(giBuf) then     ; buffer full -> play what we have
+        kRec  = 0
+        kLen  = kWNdx
+        kRNdx = 0
+        kPlay = 1
+      endif
+    else
+      if kRec == 1 then
+        kSil = kSil + 1
+        if kSil >= iHold then           ; quiet long enough -> phrase finished
+          kRec  = 0
+          kLen  = kWNdx
+          kRNdx = 0
+          if kLen > iMinLen then
+            kPlay = 1
+          endif
+        endif
+      endif
+    endif
+  endif
+
+  aOut init 0
+  if kPlay == 1 then
+    aOut table a(kRNdx), giBuf         ; play the take back, once
+    kRNdx = kRNdx + 1
+    if kRNdx >= kLen then
+      kPlay = 0
+    endif
+  else
+    aOut = 0
+  endif
+  xout aOut
+endop
+
+instr 1
+  ain = inch(1)
+
+  kMode   chnget "mode"               ; 0 = continuous delay, 1 = phrase
+  kDelMs  chnget "delayMs"
+  kThresh chnget "thresh"
+  if kDelMs <= 0 then
+    kDelMs = 1000
+  endif
+  if kThresh <= 0 then
+    kThresh = 0.02
+  endif
+  iHold = 0.5 * sr                     ; 0.5 s of silence ends a phrase
+
+  ; --- continuous delay: normal block size, non-interpolating tap = original quality ---
+  kdt = kDelMs / 1000
+  abuf delayr 5.1
+  adcont deltap kdt
+         delayw ain
+
+  if kMode == 1 then
+    aph PhraseEcho ain, kThresh, iHold
+    out aph, aph
+  else
+    out adcont, adcont
+  endif
+endin
+
+schedule(1, 0, -1)
+</CsInstruments>
+<CsScore>
+</CsScore>
+</CsoundSynthesizer>
 `;
 
   // A mic-free test tone, to confirm sound actually comes OUT of the engine.
@@ -319,6 +468,13 @@ schedule(1, 0, -1)
     status: document.getElementById('status'),
     log: document.getElementById('log'),
     rings: document.getElementById('ringHost'),
+    modeCont: document.getElementById('modeCont'),
+    modePhrase: document.getElementById('modePhrase'),
+    ctlDelay: document.getElementById('ctlDelay'),
+    ctlSens: document.getElementById('ctlSens'),
+    delay: document.getElementById('delay'),
+    delayVal: document.getElementById('delayVal'),
+    sens: document.getElementById('sens'),
   };
 
   const MESSAGES = {
@@ -330,9 +486,15 @@ schedule(1, 0, -1)
   };
   const LABEL = { idle:'Start', starting:'Starting…', live:'Stop', blocked:'Start', error:'Start' };
 
+  let mode = 0; // 0 = continuous, 1 = phrase
+
   function setState(s){
     els.body.dataset.state = s;
-    els.status.textContent = MESSAGES[s];
+    let msg = MESSAGES[s];
+    if (s === 'live') msg = (mode === 1)
+      ? 'Speak a phrase, then pause — it plays back.'
+      : 'Listening — you hear yourself after the delay.';
+    els.status.textContent = msg;
     els.btn.textContent = LABEL[s];
     els.btn.disabled = (s === 'starting');
   }
@@ -345,17 +507,23 @@ schedule(1, 0, -1)
     els.log.scrollTop = els.log.scrollHeight;
   }
 
-  // ── echo rings, spawned at the delay interval while live ──
+  // ── echo rings: in continuous mode, pulse at the delay interval ──
   const reduced = matchMedia('(prefers-reduced-motion:reduce)').matches;
-  let ringTimer = null;
+  let ringTimer = null, ringMs = 1000;
   function spawnRing(){
     const r = document.createElement('span');
     r.className = 'echo-ring';
     r.addEventListener('animationend', () => r.remove());
     els.rings.appendChild(r);
   }
-  function startRings(){ if (reduced) return; spawnRing(); ringTimer = setInterval(spawnRing, 1000); }
+  function startRings(){
+    stopRings();
+    if (reduced || mode !== 0) return;   // phrase mode has no fixed period
+    spawnRing();
+    ringTimer = setInterval(spawnRing, ringMs);
+  }
   function stopRings(){ clearInterval(ringTimer); ringTimer = null; els.rings.innerHTML = ''; }
+  function setRingMs(ms){ ringMs = Math.max(200, ms); if (els.body.dataset.state === 'live') startRings(); }
 
   // ── load @csound/browser from a CDN (try a few, report clearly) ──
   let CsoundFactory = null;
@@ -423,6 +591,7 @@ schedule(1, 0, -1)
 
       await compileCsd(csound, CSD);
       await csound.start();
+      pushControls();              // send mode, delay time and sensitivity to the engine
       setState('live');
       startRings();
       log('csound', 'performing.');
@@ -446,6 +615,45 @@ schedule(1, 0, -1)
     const s = els.body.dataset.state;
     if (s === 'live') stop();
     else if (s !== 'starting') start();
+  });
+
+  // ── controls: delay time, mode, sensitivity ──
+  const delayMsNow = () => Math.round(parseFloat(els.delay.value) * 1000);
+  // sensitivity 0..100 -> rms threshold (log). higher slider = more sensitive = lower threshold
+  const threshNow  = () => 0.003 * Math.pow(10, ((100 - parseFloat(els.sens.value)) / 100) * 1.6);
+
+  function pushControls(){
+    if (!csound) return;
+    csound.setControlChannel('mode', mode);
+    csound.setControlChannel('delayMs', delayMsNow());
+    csound.setControlChannel('thresh', threshNow());
+  }
+
+  function setMode(m){
+    mode = m;
+    els.modeCont.classList.toggle('active', m === 0);
+    els.modePhrase.classList.toggle('active', m === 1);
+    els.modeCont.setAttribute('aria-pressed', m === 0);
+    els.modePhrase.setAttribute('aria-pressed', m === 1);
+    els.ctlDelay.classList.toggle('hidden', m !== 0);
+    els.ctlSens.classList.toggle('hidden', m !== 1);
+    if (csound) csound.setControlChannel('mode', m);
+    if (els.body.dataset.state === 'live'){
+      (m === 0) ? startRings() : stopRings();
+      setState('live');               // refresh status text
+    }
+  }
+  els.modeCont.addEventListener('click', () => setMode(0));
+  els.modePhrase.addEventListener('click', () => setMode(1));
+
+  els.delay.addEventListener('input', () => {
+    const sec = parseFloat(els.delay.value);
+    els.delayVal.textContent = sec.toFixed(2) + ' s';
+    setRingMs(Math.round(sec * 1000));
+    if (csound) csound.setControlChannel('delayMs', delayMsNow());
+  });
+  els.sens.addEventListener('input', () => {
+    if (csound) csound.setControlChannel('thresh', threshNow());
   });
 
   // ── mic-free output test: plays a 440 Hz tone for ~3 s ──
